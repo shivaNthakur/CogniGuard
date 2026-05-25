@@ -1,0 +1,11 @@
+# frontend/.dockerignore
+node_modules/
+build/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+.git/
+README.md
+coverage/

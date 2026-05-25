@@ -1,0 +1,112 @@
+# docker-compose.yml (place in ROOT cogniguard/ folder)
+version: '3.8'
+# ■■ Shared network — all containers talk to each other ■■■■■■■■■■■■■■■■
+networks:
+cogniguard_net:
+driver: bridge
+# ■■ Persistent storage ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+volumes:
+postgres_data:
+redis_data:
+services:
+# ■■ 1. PostgreSQL ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+cogniguard_postgres:
+image: postgres:15-alpine
+container_name: cogniguard_postgres
+networks: [cogniguard_net]
+environment:
+POSTGRES_DB: ${POSTGRES_DB:-cogniguard}
+POSTGRES_USER: ${POSTGRES_USER:-postgres}
+POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+ports:
+- '5432:5432'
+volumes:
+- postgres_data:/var/lib/postgresql/data
+healthcheck:
+test: ['CMD-SHELL', 'pg_isready -U postgres']
+interval: 5s
+timeout: 5s
+retries: 5
+restart: unless-stopped
+# ■■ 2. Redis ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+cogniguard_redis:
+image: redis:7-alpine
+container_name: cogniguard_redis
+networks: [cogniguard_net]
+ports:
+- '6379:6379'
+volumes:
+- redis_data:/data
+healthcheck:
+test: ['CMD', 'redis-cli', 'ping']
+interval: 5s
+timeout: 3s
+retries: 5
+restart: unless-stopped
+# ■■ 3. ML Engine (Prince's agents) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+cogniguard_ml:
+build:
+context: ./ml_engine
+dockerfile: Dockerfile
+container_name: cogniguard_ml
+networks: [cogniguard_net]
+ports:
+- '8001:8001'
+environment:
+MODEL_PATH: ./models/
+LOG_LEVEL: ${LOG_LEVEL:-INFO}
+volumes:
+- ./ml_engine/models:/app/models # persist trained models
+healthcheck:
+test: ['CMD', 'curl', '-f', 'http://localhost:8001/ml/health']
+interval: 30s
+timeout: 10s
+start_period: 60s # TF loading takes time
+retries: 3
+restart: unless-stopped
+# ■■ 4. Backend (Shiva's FastAPI) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+cogniguard_backend:
+build:
+context: ./backend
+dockerfile: Dockerfile
+container_name: cogniguard_backend
+networks: [cogniguard_net]
+ports:
+- '8000:8000'
+environment:
+POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-secret}@cogniguard_postgres:5432/${POSTGRE
+S_DB:-cogniguard}
+REDIS_URL: redis://cogniguard_redis:6379
+ML_SERVICE_URL: http://cogniguard_ml:8001
+JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
+CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:80}
+depends_on:
+cogniguard_postgres:
+condition: service_healthy
+cogniguard_redis:
+condition: service_healthy
+cogniguard_ml:
+condition: service_started
+healthcheck:
+test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+interval: 30s
+timeout: 10s
+start_period: 30s
+retries: 3
+restart: unless-stopped
+# ■■ 5. Frontend (Anshul's React) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+cogniguard_frontend:
+build:
+context: ./frontend
+dockerfile: Dockerfile
+args:
+REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
+REACT_APP_WS_URL: ${REACT_APP_WS_URL:-ws://localhost:8000}
+container_name: cogniguard_frontend
+networks: [cogniguard_net]
+ports:
+- '80:80'
+depends_on:
+cogniguard_backend:
+condition: service_healthy
+restart: unless-stopped
